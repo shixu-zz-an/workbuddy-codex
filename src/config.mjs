@@ -12,6 +12,9 @@ export const DEFAULT_CONFIG = {
     port: 8787,
     authToken: "",
   },
+  logging: {
+    requestLogFile: "logs/requests.log",
+  },
   workbuddy: {
     configDir: path.join(os.homedir(), ".workbuddy"),
     installAppServerModel: true,
