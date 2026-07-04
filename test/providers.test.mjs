@@ -113,3 +113,34 @@ test("TokenProxyProvider requires explicit risk acceptance", async () => {
     /risk acceptance/,
   );
 });
+
+test("AppServerProvider interrupts and clears active turn on timeout", async () => {
+  const calls = [];
+  const fakeClient = {
+    onNotification(handler) {
+      this.handler = handler;
+    },
+    onRequest() {},
+    async start() {},
+    async request(method, params) {
+      calls.push({ method, params });
+      if (method === "thread/start") return { thread: { id: "thread-timeout" } };
+      if (method === "turn/start") return { turn: { id: "turn-timeout" } };
+      if (method === "turn/interrupt") return {};
+      throw new Error(`unexpected ${method}`);
+    },
+  };
+  const provider = new AppServerProvider({
+    client: fakeClient,
+    logger: { warn() {} },
+    config: { codex: { cwd: process.cwd(), effort: "low", sandbox: "read-only", approvalPolicy: "never", requestTimeoutMs: 1 } },
+  });
+
+  await assert.rejects(
+    provider.complete({ messages: [{ role: "user", content: "hi" }] }),
+    /Timed out waiting for Codex app-server response/,
+  );
+
+  assert.equal(provider.diagnostics().activeThreads, 0);
+  assert.equal(calls.some((call) => call.method === "turn/interrupt"), true);
+});

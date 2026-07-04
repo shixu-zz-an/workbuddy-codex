@@ -85,13 +85,17 @@ export class AppServerProvider {
     });
     active.turnId = turnResponse.turn.id;
 
-    const firstResult = await withTimeout(
-      Promise.race([active.completed.promise, active.toolRequested.promise]),
-      codex.requestTimeoutMs || 300000,
-      "Timed out waiting for Codex app-server response",
-    );
-
-    return firstResult;
+    try {
+      return await withTimeout(
+        Promise.race([active.completed.promise, active.toolRequested.promise]),
+        codex.requestTimeoutMs || 300000,
+        "Timed out waiting for Codex app-server response",
+      );
+    } catch (error) {
+      await this.#interruptActive(active);
+      this.activeByThread.delete(threadId);
+      throw error;
+    }
   }
 
   async #resumeWithToolResults(toolResults) {
@@ -119,11 +123,22 @@ export class AppServerProvider {
       return active?.completed.promise;
     }).filter(Boolean);
 
-    return withTimeout(
-      Promise.race(completions),
-      this.config.codex?.requestTimeoutMs || 300000,
-      "Timed out waiting for Codex after WorkBuddy tool result",
-    );
+    try {
+      return await withTimeout(
+        Promise.race(completions),
+        this.config.codex?.requestTimeoutMs || 300000,
+        "Timed out waiting for Codex after WorkBuddy tool result",
+      );
+    } catch (error) {
+      for (const threadId of touchedThreads) {
+        const active = this.activeByThread.get(threadId);
+        if (active) {
+          await this.#interruptActive(active);
+          this.activeByThread.delete(threadId);
+        }
+      }
+      throw error;
+    }
   }
 
   #handleNotification(notification) {
@@ -194,6 +209,18 @@ export class AppServerProvider {
     }
 
     return deferred.promise;
+  }
+
+  async #interruptActive(active) {
+    if (!active?.threadId || !active?.turnId) return;
+    try {
+      await this.client.request("turn/interrupt", {
+        threadId: active.threadId,
+        turnId: active.turnId,
+      });
+    } catch (error) {
+      this.logger.warn?.(`failed to interrupt timed-out Codex turn: ${error?.message || error}`);
+    }
   }
 
   diagnostics() {
