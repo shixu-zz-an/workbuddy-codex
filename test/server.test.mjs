@@ -156,6 +156,52 @@ test("GatewayServer writes request process events to a log file", async () => {
   }
 });
 
+test("GatewayServer redacts secrets without hiding token-count request fields", async () => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "workbuddy-codex-redact-"));
+  const requestLogFile = path.join(tmpDir, "requests.log");
+  const gateway = new GatewayServer({
+    config: {
+      server: { host: "127.0.0.1", port: 0 },
+      logging: { requestLogFile },
+    },
+    logger: { warn() {} },
+  });
+  gateway.appServerProvider = {
+    complete: async () => ({ type: "message", content: "logged" }),
+    diagnostics: () => ({ provider: "test" }),
+    stop: async () => {},
+  };
+  await gateway.listen();
+  const { port } = gateway.httpServer.address();
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer should-not-log" },
+      body: JSON.stringify({
+        model: "codex-app-server",
+        max_tokens: 321,
+        usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 },
+        bearerToken: "secret-token",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    await gateway.requestLog.flush();
+
+    const lines = (await readFile(requestLogFile, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    const body = lines.find((line) => line.event === "request_body").body;
+    assert.equal(body.max_tokens, 321);
+    assert.deepEqual(body.usage, { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 });
+    assert.equal(body.bearerToken, "********");
+    assert.doesNotMatch(await readFile(requestLogFile, "utf8"), /secret-token|should-not-log/);
+  } finally {
+    await gateway.close();
+    await rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test("GatewayServer streams app-server deltas as OpenAI SSE chunks", async () => {
   const gateway = new GatewayServer({
     config: {
@@ -194,6 +240,51 @@ test("GatewayServer streams app-server deltas as OpenAI SSE chunks", async () =>
     assert.match(response.headers.get("content-type"), /text\/event-stream/);
     assert.match(text, /"content":"hel"/);
     assert.match(text, /"content":"lo"/);
+    assert.match(text, /data: \[DONE\]/);
+  } finally {
+    await gateway.close();
+  }
+});
+
+test("GatewayServer keeps idle SSE streams alive and emits usage when requested", async () => {
+  const gateway = new GatewayServer({
+    config: {
+      server: { host: "127.0.0.1", port: 0, streamHeartbeatMs: 5 },
+    },
+    logger: { warn() {} },
+  });
+  gateway.appServerProvider = {
+    completeStream: async () => ({
+      type: "message_stream",
+      deltas: (async function* () {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        yield "ok";
+      })(),
+      cancel: async () => {},
+    }),
+    diagnostics: () => ({ provider: "test" }),
+    stop: async () => {},
+  };
+  await gateway.listen();
+  const { port } = gateway.httpServer.address();
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "codex-app-server",
+        stream: true,
+        stream_options: { include_usage: true },
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    const text = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(text, /: keep-alive/);
+    assert.match(text, /"content":"ok"/);
+    assert.match(text, /"usage":\{"prompt_tokens":/);
     assert.match(text, /data: \[DONE\]/);
   } finally {
     await gateway.close();

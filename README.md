@@ -74,7 +74,7 @@ WorkBuddy custom model
   -> your authenticated Codex backend
 ```
 
-When WorkBuddy sends `stream: true`, the gateway returns `text/event-stream` immediately and forwards Codex app-server `item/agentMessage/delta` notifications as OpenAI-compatible `chat.completion.chunk` frames. The stream ends with a stop chunk and `data: [DONE]`.
+When WorkBuddy sends `stream: true`, the gateway returns `text/event-stream` immediately and forwards Codex app-server `item/agentMessage/delta` notifications as OpenAI-compatible `chat.completion.chunk` frames. While Codex is thinking, the HTTP stream emits SSE keep-alive comments so WorkBuddy and intermediaries do not see a dead connection. The stream ends with a stop chunk, an estimated usage chunk when `stream_options.include_usage` is set, and `data: [DONE]`.
 
 The bridge intentionally does not advertise image or reasoning-output support by default. WorkBuddy will therefore keep image-only features away from this custom model instead of sending data the gateway cannot faithfully handle. Request-level reasoning effort is still mapped to Codex effort when WorkBuddy sends it.
 
@@ -154,3 +154,4 @@ Equivalent CLI:
 - Tool calls may still require a request/response round trip because WorkBuddy must execute the requested tool before Codex can continue.
 - Image inputs are not advertised as supported. If WorkBuddy sends an image block anyway, the gateway marks it as unsupported in the Codex transcript rather than silently pretending it was understood.
 - Usage numbers are approximate estimates for WorkBuddy compatibility, not provider billing data.
+- App-server stream timeout is an idle timeout. Long tasks can run past the configured timeout as long as Codex continues producing stream activity.

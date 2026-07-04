@@ -10,6 +10,7 @@ import {
   buildSseDoneChunk,
   buildSseErrorChunk,
   buildSseStopChunk,
+  buildSseUsageChunk,
   buildSseChunks,
   estimateUsage,
   buildToolCallCompletion,
@@ -198,16 +199,39 @@ export class GatewayServer {
     const id = `chatcmpl-codex-${randomUUID()}`;
     const created = Math.floor(Date.now() / 1000);
     let includeRole = true;
+    let content = "";
+    let chunkCount = 0;
+    let lastProgressLogAt = Date.now();
+    const heartbeat = this.#startSseHeartbeat(res);
     try {
       for await (const event of result.deltas) {
         if (typeof event === "string") {
           if (!event) continue;
+          content += event;
+          chunkCount += 1;
+          if (chunkCount === 1) {
+            this.#logRequest("stream_first_delta", requestContext, { streamType: "message", chars: event.length });
+          } else if (Date.now() - lastProgressLogAt >= 30000) {
+            lastProgressLogAt = Date.now();
+            this.#logRequest("stream_progress", requestContext, {
+              streamType: "message",
+              chunks: chunkCount,
+              chars: content.length,
+            });
+          }
           res.write(buildSseDeltaChunk(requestBody, { content: event, includeRole, id, created }));
           includeRole = false;
           continue;
         }
         if (event?.type === "tool_calls") {
+          this.#logRequest("stream_tool_call_requested", requestContext, {
+            streamType: "message",
+            toolCallCount: Array.isArray(event.toolCalls) ? event.toolCalls.length : 0,
+          });
           res.write(this.#toolCallSseChunk(requestBody, event.toolCalls || [], { id, created }));
+          if (requestBody.stream_options?.include_usage) {
+            res.write(buildSseUsageChunk(requestBody, event.toolCalls || [], { id, created }));
+          }
           res.write(buildSseDoneChunk());
           completed = true;
           this.#logRequest("stream_completed", requestContext, { streamType: "message", finishReason: "tool_calls" });
@@ -215,6 +239,9 @@ export class GatewayServer {
         }
       }
       res.write(buildSseStopChunk(requestBody, { id, created }));
+      if (requestBody.stream_options?.include_usage) {
+        res.write(buildSseUsageChunk(requestBody, content, { id, created }));
+      }
       res.write(buildSseDoneChunk());
       completed = true;
       this.#logRequest("stream_completed", requestContext, { streamType: "message", finishReason: "stop" });
@@ -229,8 +256,18 @@ export class GatewayServer {
       res.write(buildSseDoneChunk());
       return res.end();
     } finally {
+      clearInterval(heartbeat);
       res.off("close", onClose);
     }
+  }
+
+  #startSseHeartbeat(res) {
+    const intervalMs = this.config.server?.streamHeartbeatMs || 15000;
+    const heartbeat = setInterval(() => {
+      if (!res.destroyed && !res.writableEnded) res.write(": keep-alive\n\n");
+    }, intervalMs);
+    heartbeat.unref?.();
+    return heartbeat;
   }
 
   async #rawStream(req, res, result, requestContext) {
@@ -436,13 +473,21 @@ export class GatewayServer {
     if (!value || typeof value !== "object") return value;
     const result = {};
     for (const [key, nested] of Object.entries(value)) {
-      if (/(token|secret|apikey|api_key|authorization|password|bearer)/i.test(key)) {
+      if (this.#isSensitiveLogKey(key)) {
         result[key] = nested ? "********" : nested;
       } else {
         result[key] = this.#redact(nested);
       }
     }
     return result;
+  }
+
+  #isSensitiveLogKey(key) {
+    const normalized = String(key).toLowerCase();
+    if (normalized === "max_tokens" || normalized === "max_completion_tokens") return false;
+    if (normalized === "prompt_tokens" || normalized === "completion_tokens" || normalized === "total_tokens") return false;
+    return /(secret|apikey|api_key|authorization|password|bearer|bearertoken|access[_-]?token|refresh[_-]?token|id[_-]?token)$/i.test(normalized)
+      || normalized === "token";
   }
 }
 

@@ -7,6 +7,7 @@ import {
   buildSseDoneChunk,
   buildSseErrorChunk,
   buildSseStopChunk,
+  buildSseUsageChunk,
   buildSseChunks,
   estimateUsage,
   messagesToPrompt,
@@ -73,8 +74,10 @@ test("messagesToPrompt preserves WorkBuddy roles, tool calls, tool results, cont
   assert.match(prompt, /"name":"read_file"/);
   assert.match(prompt, /### Tool result \(call-1\)/);
   assert.match(prompt, /Unsupported image input/);
-  assert.match(prompt, /Available WorkBuddy tools:/);
+  assert.match(prompt, /Available WorkBuddy tools summary:/);
   assert.match(prompt, /"description":"Read file"/);
+  assert.doesNotMatch(prompt, /"inputSchema"/);
+  assert.doesNotMatch(prompt, /"properties"/);
 });
 
 test("normalizeOpenAiTools converts function tools to Codex dynamic tools", () => {
@@ -139,6 +142,7 @@ test("SSE helper chunks emit OpenAI-compatible streaming frames", () => {
   const first = buildSseDeltaChunk(request, { content: "he", includeRole: true, id: "chatcmpl-test", created: 123 });
   const next = buildSseDeltaChunk(request, { content: "llo", id: "chatcmpl-test", created: 123 });
   const stop = buildSseStopChunk(request, { id: "chatcmpl-test", created: 123 });
+  const usage = buildSseUsageChunk(request, "hello", { id: "chatcmpl-test", created: 123 });
   const error = buildSseErrorChunk(500, "stream failed");
 
   assert.deepEqual(JSON.parse(first.slice("data: ".length)).choices[0].delta, {
@@ -147,6 +151,8 @@ test("SSE helper chunks emit OpenAI-compatible streaming frames", () => {
   });
   assert.deepEqual(JSON.parse(next.slice("data: ".length)).choices[0].delta, { content: "llo" });
   assert.equal(JSON.parse(stop.slice("data: ".length)).choices[0].finish_reason, "stop");
+  assert.deepEqual(JSON.parse(usage.slice("data: ".length)).choices, []);
+  assert.ok(JSON.parse(usage.slice("data: ".length)).usage.total_tokens > 0);
   assert.equal(JSON.parse(error.slice("data: ".length)).error.message, "stream failed");
   assert.equal(buildSseDoneChunk(), "data: [DONE]\n\n");
 });

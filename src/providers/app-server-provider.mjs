@@ -285,12 +285,14 @@ export class AppServerProvider {
 
     if (notification.method === "item/agentMessage/delta") {
       active.content += params.delta || "";
+      this.#refreshStreamTimeout(active);
       active.stream?.push(params.delta || "");
       return;
     }
 
     if (notification.method === "item/completed" && params.item?.type === "agentMessage") {
       if (!active.content && params.item.text) active.content = params.item.text;
+      this.#refreshStreamTimeout(active);
       return;
     }
 
@@ -371,13 +373,19 @@ export class AppServerProvider {
 
   #armStreamTimeout(active) {
     const timeoutMs = this.config.codex?.requestTimeoutMs || 300000;
+    if (active.streamTimeout) clearTimeout(active.streamTimeout);
     active.streamTimeout = setTimeout(async () => {
-      const error = new Error("Timed out waiting for Codex app-server response");
+      const error = new Error(`Timed out waiting for Codex app-server response after ${timeoutMs}ms without stream activity`);
       active.stream?.fail(error);
       await this.#interruptActive(active);
       this.activeByThread.delete(active.threadId);
     }, timeoutMs);
     active.streamTimeout.unref?.();
+  }
+
+  #refreshStreamTimeout(active) {
+    if (!active?.stream || !active.streamTimeout) return;
+    this.#armStreamTimeout(active);
   }
 
   #streamResult(active) {

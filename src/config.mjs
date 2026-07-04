@@ -11,6 +11,7 @@ export const DEFAULT_CONFIG = {
     host: "127.0.0.1",
     port: 8787,
     authToken: "",
+    streamHeartbeatMs: 15000,
   },
   logging: {
     requestLogFile: "logs/requests.log",
@@ -31,7 +32,7 @@ export const DEFAULT_CONFIG = {
     effort: "low",
     sandbox: "read-only",
     approvalPolicy: "never",
-    requestTimeoutMs: 300000,
+    requestTimeoutMs: 900000,
     appServerArgs: [],
   },
   tokenProxy: {

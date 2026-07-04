@@ -114,6 +114,52 @@ test("AppServerProvider streams Codex deltas before turn completion", async () =
   assert.deepEqual(await collectAsync(result.deltas), ["hel", "lo"]);
 });
 
+test("AppServerProvider treats stream timeout as idle time and refreshes it on deltas", async () => {
+  const calls = [];
+  const fakeClient = {
+    onNotification(handler) {
+      this.handler = handler;
+    },
+    onRequest() {},
+    async start() {},
+    async request(method, params) {
+      calls.push({ method, params });
+      if (method === "thread/start") return { thread: { id: "thread-idle" } };
+      if (method === "turn/start") {
+        setTimeout(() => {
+          this.handler({
+            method: "item/agentMessage/delta",
+            params: { threadId: "thread-idle", turnId: "turn-idle", delta: "a" },
+          });
+        }, 10);
+        setTimeout(() => {
+          this.handler({
+            method: "item/agentMessage/delta",
+            params: { threadId: "thread-idle", turnId: "turn-idle", delta: "b" },
+          });
+          this.handler({
+            method: "turn/completed",
+            params: { threadId: "thread-idle", turn: { id: "turn-idle", status: "completed" } },
+          });
+        }, 25);
+        return { turn: { id: "turn-idle" } };
+      }
+      if (method === "turn/interrupt") return {};
+      throw new Error(`unexpected ${method}`);
+    },
+  };
+  const provider = new AppServerProvider({
+    client: fakeClient,
+    logger: { warn() {} },
+    config: { codex: { cwd: process.cwd(), effort: "low", sandbox: "read-only", approvalPolicy: "never", requestTimeoutMs: 20 } },
+  });
+
+  const result = await provider.completeStream({ messages: [{ role: "user", content: "hi" }], stream: true });
+
+  assert.deepEqual(await collectAsync(result.deltas), ["a", "b"]);
+  assert.equal(calls.some((call) => call.method === "turn/interrupt"), false);
+});
+
 test("AppServerProvider interrupts active streamed turn on cancellation", async () => {
   const calls = [];
   const fakeClient = {

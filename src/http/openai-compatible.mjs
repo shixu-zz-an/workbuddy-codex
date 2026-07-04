@@ -57,6 +57,18 @@ function renderStructuredContent(content) {
   return normalizeContent(content);
 }
 
+function summarizeTool(tool) {
+  const schema = tool.inputSchema && typeof tool.inputSchema === "object" ? tool.inputSchema : {};
+  const properties = schema.properties && typeof schema.properties === "object" ? Object.keys(schema.properties) : [];
+  const required = Array.isArray(schema.required) ? schema.required : [];
+  return {
+    name: tool.name,
+    description: tool.description || "",
+    parameters: properties,
+    required,
+  };
+}
+
 export function messagesToPrompt(requestBody) {
   const messages = Array.isArray(requestBody.messages) ? requestBody.messages : [];
   const tools = normalizeOpenAiTools(requestBody.tools || []);
@@ -89,7 +101,7 @@ export function messagesToPrompt(requestBody) {
     `Reasoning effort: ${resolveReasoningEffort(requestBody, "(none)")}`,
     requestBody.tool_choice ? `Tool choice: ${compactJson(requestBody.tool_choice)}` : "Tool choice: auto/default",
     toolNames.length ? `Tool names supplied by WorkBuddy: ${toolNames.join(", ")}` : "No WorkBuddy tools supplied.",
-    tools.length ? `Available WorkBuddy tools:\n${compactJson(tools)}` : "",
+    tools.length ? `Available WorkBuddy tools summary:\n${compactJson(tools.map(summarizeTool))}` : "",
     "",
     "Conversation:",
     rendered || "(empty)",
@@ -235,6 +247,17 @@ export function buildSseStopChunk(requestBody, { id, created } = {}) {
   })}\n\n`;
 }
 
+export function buildSseUsageChunk(requestBody, completion = "", { id, created } = {}) {
+  return `data: ${JSON.stringify({
+    id: id || `chatcmpl-codex-${randomUUID()}`,
+    object: "chat.completion.chunk",
+    created: created || Math.floor(Date.now() / 1000),
+    model: requestBody.model || "codex-app-server",
+    choices: [],
+    usage: estimateUsage(requestBody, completion),
+  })}\n\n`;
+}
+
 export function buildSseErrorChunk(statusCode, message, details = undefined) {
   return `data: ${JSON.stringify(openAiError(statusCode, message, details).body)}\n\n`;
 }
@@ -249,6 +272,7 @@ export function buildSseChunks(requestBody, content) {
   return [
     buildSseDeltaChunk(requestBody, { content, includeRole: true, id, created }),
     buildSseStopChunk(requestBody, { id, created }),
+    ...(requestBody.stream_options?.include_usage ? [buildSseUsageChunk(requestBody, content, { id, created })] : []),
     buildSseDoneChunk(),
   ];
 }

@@ -68,11 +68,12 @@ POST /v1/chat/completions
   -> thread/start
   -> turn/start
   -> return text/event-stream headers
+  -> emit SSE keep-alive comments while no model delta is ready
   -> item/agentMessage/delta notifications become OpenAI chat.completion.chunk frames
-  -> turn/completed becomes stop chunk + data: [DONE]
+  -> turn/completed becomes stop chunk + optional usage chunk + data: [DONE]
 ```
 
-The provider exposes the deltas as an async iterable. The HTTP server owns wire-format details, so OpenAI SSE framing is kept in one place.
+The provider exposes the deltas as an async iterable. The HTTP server owns wire-format details, so OpenAI SSE framing is kept in one place. App-server stream timeout is treated as idle timeout and is refreshed when Codex emits delta or completed-message activity.
 
 If the client disconnects before the stream completes, the HTTP server calls the provider cancel hook. App-server mode sends `turn/interrupt`; token-proxy mode aborts the upstream fetch.
 
@@ -80,7 +81,7 @@ For token-proxy requests, upstream `text/event-stream` responses are forwarded a
 
 ## Transcript Compilation
 
-WorkBuddy sends OpenAI-style `messages`, `tools`, `tool_choice`, and optional reasoning controls. The bridge compiles these into a structured transcript for Codex instead of flattening them into an unlabelled chat log. The transcript preserves roles, assistant tool calls, tool results, content block types, available tool schemas, stream mode, and reasoning effort.
+WorkBuddy sends OpenAI-style `messages`, `tools`, `tool_choice`, and optional reasoning controls. The bridge compiles these into a structured transcript for Codex instead of flattening them into an unlabelled chat log. The transcript preserves roles, assistant tool calls, tool results, content block types, available tool names and concise parameter summaries, stream mode, and reasoning effort. Full tool schemas are sent through Codex dynamic tools rather than duplicated into the natural-language prompt.
 
 If Codex asks for a dynamic tool:
 
