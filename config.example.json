@@ -1,0 +1,35 @@
+{
+  "mode": "app-server",
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8787,
+    "authToken": ""
+  },
+  "workbuddy": {
+    "configDir": "~/.workbuddy",
+    "installAppServerModel": true,
+    "installTokenProxyModel": true
+  },
+  "codex": {
+    "bin": "codex",
+    "cwd": "/absolute/path/to/workspace",
+    "model": "",
+    "effort": "low",
+    "sandbox": "read-only",
+    "approvalPolicy": "never",
+    "requestTimeoutMs": 300000,
+    "appServerArgs": []
+  },
+  "tokenProxy": {
+    "enabled": false,
+    "riskAccepted": false,
+    "endpoint": "https://api.openai.com/v1/chat/completions",
+    "model": "",
+    "authSource": "env",
+    "bearerToken": "",
+    "bearerTokenEnv": "WORKBUDDY_CODEX_BEARER_TOKEN",
+    "headers": {},
+    "timeoutMs": 300000
+  }
+}
+

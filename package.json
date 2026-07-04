@@ -1,0 +1,35 @@
+{
+  "name": "workbuddy-codex",
+  "version": "0.1.0",
+  "description": "Local gateway that lets WorkBuddy use an authenticated Codex CLI/App Server backend.",
+  "type": "module",
+  "bin": {
+    "workbuddy-codex": "./bin/workbuddy-codex.mjs"
+  },
+  "scripts": {
+    "start": "node ./bin/workbuddy-codex.mjs serve",
+    "serve": "node ./bin/workbuddy-codex.mjs serve",
+    "doctor": "node ./bin/workbuddy-codex.mjs doctor",
+    "install:workbuddy": "node ./bin/workbuddy-codex.mjs install-workbuddy",
+    "test": "node --test"
+  },
+  "keywords": [
+    "codex",
+    "workbuddy",
+    "openai-compatible",
+    "local-proxy",
+    "agent"
+  ],
+  "license": "MIT",
+  "files": [
+    "bin/",
+    "src/",
+    "docs/",
+    "README.md",
+    "LICENSE",
+    "config.example.json"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}
