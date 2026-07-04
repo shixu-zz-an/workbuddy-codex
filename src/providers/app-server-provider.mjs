@@ -6,6 +6,7 @@ import {
   messagesToPrompt,
   normalizeContent,
   normalizeOpenAiTools,
+  resolveReasoningEffort,
 } from "../http/openai-compatible.mjs";
 
 function stableHash(value) {
@@ -111,6 +112,7 @@ export class AppServerProvider {
 
   async #startTurn(requestBody) {
     const codex = this.config.codex || {};
+    const effort = resolveReasoningEffort(requestBody, codex.effort || "low");
     const dynamicTools = normalizeOpenAiTools(requestBody.tools || []);
     const threadResponse = await this.client.request("thread/start", {
       cwd: codex.cwd || process.cwd(),
@@ -120,7 +122,7 @@ export class AppServerProvider {
       ephemeral: true,
       threadSource: "workbuddy-codex",
       dynamicTools,
-      config: codex.effort ? { model_reasoning_effort: codex.effort } : null,
+      config: effort ? { model_reasoning_effort: effort } : null,
     });
 
     const threadId = threadResponse.thread.id;
@@ -142,7 +144,7 @@ export class AppServerProvider {
     const turnResponse = await this.client.request("turn/start", {
       threadId,
       input: [{ type: "text", text: messagesToPrompt(requestBody), text_elements: [] }],
-      effort: codex.effort || null,
+      effort,
       model: codex.model || null,
     });
     active.turnId = turnResponse.turn.id;
@@ -162,6 +164,7 @@ export class AppServerProvider {
 
   async #startStreamTurn(requestBody) {
     const codex = this.config.codex || {};
+    const effort = resolveReasoningEffort(requestBody, codex.effort || "low");
     const dynamicTools = normalizeOpenAiTools(requestBody.tools || []);
     const threadResponse = await this.client.request("thread/start", {
       cwd: codex.cwd || process.cwd(),
@@ -171,7 +174,7 @@ export class AppServerProvider {
       ephemeral: true,
       threadSource: "workbuddy-codex",
       dynamicTools,
-      config: codex.effort ? { model_reasoning_effort: codex.effort } : null,
+      config: effort ? { model_reasoning_effort: effort } : null,
     });
 
     const threadId = threadResponse.thread.id;
@@ -193,7 +196,7 @@ export class AppServerProvider {
     const turnResponse = await this.client.request("turn/start", {
       threadId,
       input: [{ type: "text", text: messagesToPrompt(requestBody), text_elements: [] }],
-      effort: codex.effort || null,
+      effort,
       model: codex.model || null,
     });
     active.turnId = turnResponse.turn.id;

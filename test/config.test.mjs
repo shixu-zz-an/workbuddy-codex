@@ -14,6 +14,8 @@ test("mergeConfig preserves defaults while applying nested user overrides", () =
   assert.equal(config.server.port, 9999);
   assert.equal(config.codex.effort, "low");
   assert.equal(config.codex.bin, DEFAULT_CONFIG.codex.bin);
+  assert.equal(config.limits.maxInputTokens, DEFAULT_CONFIG.limits.maxInputTokens);
+  assert.equal(config.limits.maxOutputTokens, DEFAULT_CONFIG.limits.maxOutputTokens);
   assert.equal(config.tokenProxy.enabled, true);
   assert.equal(config.tokenProxy.bearerToken, "secret-token");
 });

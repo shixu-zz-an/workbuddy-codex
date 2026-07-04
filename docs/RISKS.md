@@ -24,6 +24,10 @@ Project safeguards:
 
 The normal bridge depends on WorkBuddy sending OpenAI-compatible `messages` and `tools`. If WorkBuddy uses a non-standard custom protocol for some features, those features may need additional adapters.
 
+The model metadata is intentionally honest. Image and reasoning-output flags are not enabled by default because the bridge cannot yet faithfully deliver those capabilities. Enabling them prematurely would cause WorkBuddy to send richer inputs or UI expectations that Codex app-server mode does not currently satisfy.
+
+Usage numbers returned by the bridge are estimates. They exist so WorkBuddy does not see empty token accounting, but they must not be treated as billing-grade provider usage.
+
 ## Codex Compatibility
 
 `codex app-server` is currently marked experimental by the Codex CLI. The project isolates the JSON-RPC bridge in `src/app-server/` so protocol changes are localized.

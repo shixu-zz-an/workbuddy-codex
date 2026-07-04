@@ -27,19 +27,48 @@ export function normalizeContent(content) {
   return JSON.stringify(content);
 }
 
+function compactJson(value) {
+  return JSON.stringify(value);
+}
+
+function renderContentBlock(part, index) {
+  if (typeof part === "string") return `Content block ${index + 1} (text)\n${part}`;
+  if (!part || typeof part !== "object") return `Content block ${index + 1} (unknown)\n${String(part)}`;
+  if (part.type === "text") return `Content block ${index + 1} (text)\n${part.text || ""}`;
+  if (part.type === "image_url") {
+    return [
+      `Content block ${index + 1} (unsupported_image)`,
+      `Unsupported image input received from WorkBuddy: ${compactJson(part.image_url || {})}`,
+      "The current Codex bridge does not advertise image support. Ask the user for a textual description if the image is necessary.",
+    ].join("\n");
+  }
+  if (part.type === "input_image") {
+    return [
+      `Content block ${index + 1} (unsupported_image)`,
+      `Unsupported image input received from WorkBuddy: ${compactJson(part)}`,
+      "The current Codex bridge does not advertise image support. Ask the user for a textual description if the image is necessary.",
+    ].join("\n");
+  }
+  return `Content block ${index + 1} (${part.type || "object"})\n${compactJson(part)}`;
+}
+
+function renderStructuredContent(content) {
+  if (Array.isArray(content)) return content.map((part, index) => renderContentBlock(part, index)).join("\n\n");
+  return normalizeContent(content);
+}
+
 export function messagesToPrompt(requestBody) {
   const messages = Array.isArray(requestBody.messages) ? requestBody.messages : [];
-  const toolNames = Array.isArray(requestBody.tools)
-    ? requestBody.tools.map((tool) => tool?.function?.name || tool?.name || tool?.type).filter(Boolean)
-    : [];
+  const tools = normalizeOpenAiTools(requestBody.tools || []);
+  const toolNames = tools.map((tool) => tool.name);
 
   const rendered = messages
     .filter((message) => message?.role !== "tool")
     .map((message, index) => {
       const role = message?.role || "unknown";
       const name = message?.name ? ` name=${message.name}` : "";
-      const content = normalizeContent(message?.content);
-      const toolCalls = message?.tool_calls ? `\nTool calls: ${JSON.stringify(message.tool_calls)}` : "";
+      const content = renderStructuredContent(message?.content);
+      const toolCalls = message?.tool_calls ? `\n\nAssistant tool calls:\n${compactJson(message.tool_calls)}` : "";
       return `### Message ${index + 1} (${role}${name})\n${content}${toolCalls}`;
     })
     .join("\n\n");
@@ -53,9 +82,14 @@ export function messagesToPrompt(requestBody) {
     "You are Codex being used as the model backend for WorkBuddy through a local bridge.",
     "Preserve the user's language and produce the final assistant response expected by WorkBuddy.",
     "When tools are available, request tool use only when it is materially useful.",
+    "Preserve WorkBuddy tool-call semantics: if a tool result is needed, request the corresponding tool call instead of pretending the result exists.",
     "",
     `Requested WorkBuddy model: ${requestBody.model || "(none)"}`,
+    `Stream requested: ${Boolean(requestBody.stream)}`,
+    `Reasoning effort: ${resolveReasoningEffort(requestBody, "(none)")}`,
+    requestBody.tool_choice ? `Tool choice: ${compactJson(requestBody.tool_choice)}` : "Tool choice: auto/default",
     toolNames.length ? `Tool names supplied by WorkBuddy: ${toolNames.join(", ")}` : "No WorkBuddy tools supplied.",
+    tools.length ? `Available WorkBuddy tools:\n${compactJson(tools)}` : "",
     "",
     "Conversation:",
     rendered || "(empty)",
@@ -85,7 +119,42 @@ export function extractToolResults(messages = []) {
     .filter((result) => result.toolCallId);
 }
 
+export function resolveReasoningEffort(requestBody = {}, fallback = "low") {
+  const raw = requestBody.reasoning_effort || requestBody.reasoning?.effort || fallback;
+  if (raw === "xhigh" || raw === "max") return "high";
+  if (raw === "minimal") return "low";
+  if (raw === "low" || raw === "medium" || raw === "high") return raw;
+  return fallback;
+}
+
+function approximateTokens(value) {
+  const text = typeof value === "string" ? value : JSON.stringify(value ?? "");
+  const chars = text.length;
+  const words = text.trim() ? text.trim().split(/\s+/u).length : 0;
+  return Math.max(1, Math.ceil(Math.max(chars / 4, words * 1.3)));
+}
+
+export function estimateUsage(requestBody = {}, completion = "") {
+  const promptPayload = {
+    messages: requestBody.messages || [],
+    tools: requestBody.tools || [],
+    tool_choice: requestBody.tool_choice,
+    model: requestBody.model,
+    reasoning_effort: requestBody.reasoning_effort,
+    reasoning: requestBody.reasoning,
+  };
+  const prompt_tokens = approximateTokens(promptPayload);
+  const completion_tokens = approximateTokens(completion || "");
+  return {
+    prompt_tokens,
+    completion_tokens,
+    total_tokens: prompt_tokens + completion_tokens,
+    estimated: true,
+  };
+}
+
 export function buildChatCompletion(requestBody, content) {
+  const usage = estimateUsage(requestBody, content);
   return {
     id: `chatcmpl-codex-${randomUUID()}`,
     object: "chat.completion",
@@ -101,15 +170,12 @@ export function buildChatCompletion(requestBody, content) {
         finish_reason: "stop",
       },
     ],
-    usage: {
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-    },
+    usage,
   };
 }
 
 export function buildToolCallCompletion(requestBody, toolCalls) {
+  const usage = estimateUsage(requestBody, toolCalls);
   return {
     id: `chatcmpl-codex-${randomUUID()}`,
     object: "chat.completion",
@@ -136,11 +202,7 @@ export function buildToolCallCompletion(requestBody, toolCalls) {
         finish_reason: "tool_calls",
       },
     ],
-    usage: {
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-    },
+    usage,
   };
 }
 

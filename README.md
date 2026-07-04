@@ -10,6 +10,8 @@ The default mode is safe and durable: WorkBuddy calls a localhost `/v1/chat/comp
 - Normal mode: persistent `codex app-server` bridge, avoiding `codex exec` cold starts.
 - True streaming: `stream: true` requests receive incremental OpenAI-compatible SSE chunks as Codex emits deltas.
 - Tool-call bridge: WorkBuddy function tools are exposed to Codex as dynamic tools, then returned to WorkBuddy as OpenAI `tool_calls`.
+- WorkBuddy-aware model metadata: installed models declare custom trust level, tool support, honest image/reasoning flags, and context limits.
+- Structured transcript compiler: preserves roles, tool calls, tool results, content blocks, tool choice, and reasoning effort controls in the prompt sent to Codex.
 - Emergency mode: forward requests to a configured token-proxy endpoint, including transparent upstream SSE forwarding.
 - Local dashboard for switching modes and editing core settings.
 - WorkBuddy config installer for `~/.workbuddy/models.json`.
@@ -52,6 +54,8 @@ This writes two custom model entries to `~/.workbuddy/models.json`:
 
 Restart WorkBuddy if the model list does not refresh.
 
+The installer preserves the existing `models.json` shape. It supports both root-array files and object-shaped files with `{ "models": [...] }`.
+
 ## Normal Mode
 
 Normal mode uses:
@@ -71,6 +75,8 @@ WorkBuddy custom model
 ```
 
 When WorkBuddy sends `stream: true`, the gateway returns `text/event-stream` immediately and forwards Codex app-server `item/agentMessage/delta` notifications as OpenAI-compatible `chat.completion.chunk` frames. The stream ends with a stop chunk and `data: [DONE]`.
+
+The bridge intentionally does not advertise image or reasoning-output support by default. WorkBuddy will therefore keep image-only features away from this custom model instead of sending data the gateway cannot faithfully handle. Request-level reasoning effort is still mapped to Codex effort when WorkBuddy sends it.
 
 Tool-call flow:
 
@@ -146,3 +152,5 @@ Equivalent CLI:
 - If the Codex backend itself is slow, persistent app-server mode reduces local startup overhead but cannot remove upstream latency.
 - WorkBuddy must actually send OpenAI `tools` for the tool-call bridge to preserve its own agent tooling.
 - Tool calls may still require a request/response round trip because WorkBuddy must execute the requested tool before Codex can continue.
+- Image inputs are not advertised as supported. If WorkBuddy sends an image block anyway, the gateway marks it as unsupported in the Codex transcript rather than silently pretending it was understood.
+- Usage numbers are approximate estimates for WorkBuddy compatibility, not provider billing data.

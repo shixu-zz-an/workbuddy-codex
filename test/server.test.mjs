@@ -63,6 +63,45 @@ test("GatewayServer enforces local bearer auth when configured", async () => {
   }
 });
 
+test("GatewayServer rejects oversized requests before provider dispatch", async () => {
+  let dispatched = false;
+  const gateway = new GatewayServer({
+    config: {
+      server: { host: "127.0.0.1", port: 0 },
+      limits: { maxInputTokens: 1, maxOutputTokens: 20 },
+    },
+    logger: { warn() {} },
+  });
+  gateway.appServerProvider = {
+    complete: async () => {
+      dispatched = true;
+      return { type: "message", content: "should not happen" };
+    },
+    diagnostics: () => ({ provider: "test" }),
+    stop: async () => {},
+  };
+  await gateway.listen();
+  const { port } = gateway.httpServer.address();
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "codex-app-server",
+        messages: [{ role: "user", content: "this request is intentionally too long" }],
+      }),
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 413);
+    assert.equal(dispatched, false);
+    assert.match(body.error.message, /input is too large/i);
+  } finally {
+    await gateway.close();
+  }
+});
+
 test("GatewayServer writes request process events to a log file", async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "workbuddy-codex-log-"));
   const requestLogFile = path.join(tmpDir, "requests.log");

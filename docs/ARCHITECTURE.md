@@ -28,11 +28,23 @@ src/providers/token-proxy-provider.mjs
   Emergency forwarding provider.
 
 src/http/openai-compatible.mjs
-  OpenAI-compatible request rendering plus JSON and SSE response frame builders.
+  OpenAI-compatible request rendering, WorkBuddy transcript compilation, usage estimation, reasoning effort normalization, plus JSON and SSE response frame builders.
 
 src/workbuddy-config.mjs
   Writes WorkBuddy custom model entries into models.json.
 ```
+
+## WorkBuddy Capability Alignment
+
+WorkBuddy changes request behavior based on model metadata. The installer therefore writes honest metadata:
+
+- tool calls are enabled because the bridge maps WorkBuddy tools to Codex dynamic tools
+- images are disabled because the bridge does not currently send image bytes to Codex
+- reasoning output is disabled by default because the bridge maps effort but does not emit reasoning chunks
+- `tags: ["custom"]` and `trustLevel: "custom"` make the custom-model path explicit
+- context fields include `maxInputTokens`, `maxOutputTokens`, and `maxAllowedSize`
+
+The gateway also enforces configured limits before dispatching to Codex and returns OpenAI-compatible errors for oversized requests.
 
 ## Normal Request Flow
 
@@ -65,6 +77,10 @@ The provider exposes the deltas as an async iterable. The HTTP server owns wire-
 If the client disconnects before the stream completes, the HTTP server calls the provider cancel hook. App-server mode sends `turn/interrupt`; token-proxy mode aborts the upstream fetch.
 
 For token-proxy requests, upstream `text/event-stream` responses are forwarded as raw streams. The gateway does not parse, buffer, or reserialize upstream SSE.
+
+## Transcript Compilation
+
+WorkBuddy sends OpenAI-style `messages`, `tools`, `tool_choice`, and optional reasoning controls. The bridge compiles these into a structured transcript for Codex instead of flattening them into an unlabelled chat log. The transcript preserves roles, assistant tool calls, tool results, content block types, available tool schemas, stream mode, and reasoning effort.
 
 If Codex asks for a dynamic tool:
 

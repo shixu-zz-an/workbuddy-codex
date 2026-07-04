@@ -11,6 +11,7 @@ import {
   buildSseErrorChunk,
   buildSseStopChunk,
   buildSseChunks,
+  estimateUsage,
   buildToolCallCompletion,
   openAiError,
   stripWorkBuddyModelPrefix,
@@ -132,6 +133,7 @@ export class GatewayServer {
   async #chat(req, res, requestContext) {
     this.#requireAuth(req);
     const body = await this.#readJson(req, requestContext);
+    this.#enforceLimits(body);
     const provider = this.#selectProvider(body);
     this.#logRequest("provider_selected", requestContext, {
       provider: provider === this.tokenProxyProvider ? "token-proxy" : "app-server",
@@ -331,6 +333,26 @@ export class GatewayServer {
     const model = stripWorkBuddyModelPrefix(body.model);
     if (model === "codex-token-proxy" || this.config.mode === "token-proxy") return this.tokenProxyProvider;
     return this.appServerProvider;
+  }
+
+  #enforceLimits(body) {
+    const limits = this.config.limits || {};
+    const usage = estimateUsage(body, "");
+    const maxInputTokens = limits.maxInputTokens || 200000;
+    const maxOutputTokens = limits.maxOutputTokens || 12000;
+    const requestedOutput = body.max_completion_tokens || body.max_tokens || maxOutputTokens;
+    if (usage.prompt_tokens > maxInputTokens) {
+      throw new HttpError(
+        413,
+        `WorkBuddy request input is too large for this Codex bridge (${usage.prompt_tokens} estimated tokens > ${maxInputTokens}).`,
+      );
+    }
+    if (requestedOutput > maxOutputTokens) {
+      throw new HttpError(
+        413,
+        `Requested output is too large for this Codex bridge (${requestedOutput} tokens > ${maxOutputTokens}).`,
+      );
+    }
   }
 
   #status() {

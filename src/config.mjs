@@ -15,6 +15,10 @@ export const DEFAULT_CONFIG = {
   logging: {
     requestLogFile: "logs/requests.log",
   },
+  limits: {
+    maxInputTokens: 200000,
+    maxOutputTokens: 12000,
+  },
   workbuddy: {
     configDir: path.join(os.homedir(), ".workbuddy"),
     installAppServerModel: true,

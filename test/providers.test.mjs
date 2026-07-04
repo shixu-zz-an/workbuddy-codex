@@ -43,6 +43,38 @@ test("AppServerProvider starts a Codex turn and returns final assistant text", a
   assert.equal(calls.some((call) => call.method === "turn/start"), true);
 });
 
+test("AppServerProvider uses request-level reasoning effort when provided", async () => {
+  const calls = [];
+  const fakeClient = {
+    onNotification(handler) {
+      this.handler = handler;
+    },
+    async start() {},
+    async request(method, params) {
+      calls.push({ method, params });
+      if (method === "thread/start") return { thread: { id: "thread-effort" } };
+      if (method === "turn/start") {
+        queueMicrotask(() => {
+          this.handler({ method: "item/agentMessage/delta", params: { threadId: "thread-effort", turnId: "turn-effort", delta: "ok" } });
+          this.handler({ method: "turn/completed", params: { threadId: "thread-effort", turn: { id: "turn-effort", status: "completed" } } });
+        });
+        return { turn: { id: "turn-effort" } };
+      }
+      throw new Error(`unexpected ${method}`);
+    },
+  };
+
+  const provider = new AppServerProvider({
+    client: fakeClient,
+    config: { codex: { cwd: process.cwd(), effort: "low", sandbox: "read-only", approvalPolicy: "never" } },
+  });
+
+  await provider.complete({ messages: [{ role: "user", content: "hi" }], reasoning_effort: "high" });
+
+  assert.equal(calls.find((call) => call.method === "thread/start").params.config.model_reasoning_effort, "high");
+  assert.equal(calls.find((call) => call.method === "turn/start").params.effort, "high");
+});
+
 test("AppServerProvider streams Codex deltas before turn completion", async () => {
   const fakeClient = {
     onNotification(handler) {
