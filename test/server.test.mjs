@@ -116,3 +116,135 @@ test("GatewayServer writes request process events to a log file", async () => {
     await rm(tmpDir, { recursive: true, force: true });
   }
 });
+
+test("GatewayServer streams app-server deltas as OpenAI SSE chunks", async () => {
+  const gateway = new GatewayServer({
+    config: {
+      server: { host: "127.0.0.1", port: 0 },
+    },
+    logger: { warn() {} },
+  });
+  gateway.appServerProvider = {
+    completeStream: async () => ({
+      type: "message_stream",
+      deltas: (async function* () {
+        yield "hel";
+        yield "lo";
+      })(),
+      cancel: async () => {},
+    }),
+    diagnostics: () => ({ provider: "test" }),
+    stop: async () => {},
+  };
+  await gateway.listen();
+  const { port } = gateway.httpServer.address();
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "codex-app-server",
+        stream: true,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    const text = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type"), /text\/event-stream/);
+    assert.match(text, /"content":"hel"/);
+    assert.match(text, /"content":"lo"/);
+    assert.match(text, /data: \[DONE\]/);
+  } finally {
+    await gateway.close();
+  }
+});
+
+test("GatewayServer forwards token-proxy SSE without JSON wrapping", async () => {
+  const gateway = new GatewayServer({
+    config: {
+      server: { host: "127.0.0.1", port: 0 },
+      mode: "token-proxy",
+      tokenProxy: { enabled: true, riskAccepted: true, endpoint: "https://upstream.example/v1/chat/completions" },
+    },
+    logger: { warn() {} },
+  });
+  gateway.tokenProxyProvider = {
+    complete: async () => ({
+      type: "raw_stream",
+      statusCode: 200,
+      headers: { "content-type": "text/event-stream; charset=utf-8" },
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("data: upstream\n\n"));
+          controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+          controller.close();
+        },
+      }),
+      cancel: async () => {},
+    }),
+  };
+  await gateway.listen();
+  const { port } = gateway.httpServer.address();
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "codex-token-proxy",
+        stream: true,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    const text = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type"), /text\/event-stream/);
+    assert.equal(text, "data: upstream\n\ndata: [DONE]\n\n");
+  } finally {
+    await gateway.close();
+  }
+});
+
+test("GatewayServer returns tool calls as SSE when streaming is requested", async () => {
+  const gateway = new GatewayServer({
+    config: {
+      server: { host: "127.0.0.1", port: 0 },
+    },
+    logger: { warn() {} },
+  });
+  gateway.appServerProvider = {
+    complete: async () => ({
+      type: "tool_calls",
+      toolCalls: [{ id: "call-1", name: "read_file", arguments: { path: "README.md" } }],
+    }),
+    diagnostics: () => ({ provider: "test" }),
+    stop: async () => {},
+  };
+  await gateway.listen();
+  const { port } = gateway.httpServer.address();
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "codex-app-server",
+        stream: true,
+        messages: [{ role: "user", content: "read a file" }],
+        tools: [{ type: "function", function: { name: "read_file", parameters: { type: "object" } } }],
+      }),
+    });
+    const text = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type"), /text\/event-stream/);
+    assert.match(text, /"tool_calls"/);
+    assert.match(text, /"name":"read_file"/);
+    assert.match(text, /data: \[DONE\]/);
+  } finally {
+    await gateway.close();
+  }
+});

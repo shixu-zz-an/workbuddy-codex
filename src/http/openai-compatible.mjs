@@ -144,26 +144,50 @@ export function buildToolCallCompletion(requestBody, toolCalls) {
   };
 }
 
+export function buildSseDeltaChunk(requestBody, { content = "", includeRole = false, id, created } = {}) {
+  return `data: ${JSON.stringify({
+    id: id || `chatcmpl-codex-${randomUUID()}`,
+    object: "chat.completion.chunk",
+    created: created || Math.floor(Date.now() / 1000),
+    model: requestBody.model || "codex-app-server",
+    choices: [
+      {
+        index: 0,
+        delta: {
+          ...(includeRole ? { role: "assistant" } : {}),
+          content,
+        },
+        finish_reason: null,
+      },
+    ],
+  })}\n\n`;
+}
+
+export function buildSseStopChunk(requestBody, { id, created } = {}) {
+  return `data: ${JSON.stringify({
+    id: id || `chatcmpl-codex-${randomUUID()}`,
+    object: "chat.completion.chunk",
+    created: created || Math.floor(Date.now() / 1000),
+    model: requestBody.model || "codex-app-server",
+    choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+  })}\n\n`;
+}
+
+export function buildSseErrorChunk(statusCode, message, details = undefined) {
+  return `data: ${JSON.stringify(openAiError(statusCode, message, details).body)}\n\n`;
+}
+
+export function buildSseDoneChunk() {
+  return "data: [DONE]\n\n";
+}
+
 export function buildSseChunks(requestBody, content) {
   const id = `chatcmpl-codex-${randomUUID()}`;
   const created = Math.floor(Date.now() / 1000);
-  const model = requestBody.model || "codex-app-server";
   return [
-    `data: ${JSON.stringify({
-      id,
-      object: "chat.completion.chunk",
-      created,
-      model,
-      choices: [{ index: 0, delta: { role: "assistant", content }, finish_reason: null }],
-    })}\n\n`,
-    `data: ${JSON.stringify({
-      id,
-      object: "chat.completion.chunk",
-      created,
-      model,
-      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-    })}\n\n`,
-    "data: [DONE]\n\n",
+    buildSseDeltaChunk(requestBody, { content, includeRole: true, id, created }),
+    buildSseStopChunk(requestBody, { id, created }),
+    buildSseDoneChunk(),
   ];
 }
 

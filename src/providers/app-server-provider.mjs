@@ -22,6 +22,57 @@ function approvalForCodex(value) {
   return "never";
 }
 
+function createAsyncQueue() {
+  const values = [];
+  const waiters = [];
+  let closed = false;
+  let failure;
+
+  function settle() {
+    while (waiters.length && (values.length || closed || failure)) {
+      const waiter = waiters.shift();
+      if (failure) {
+        waiter.reject(failure);
+      } else if (values.length) {
+        waiter.resolve({ value: values.shift(), done: false });
+      } else {
+        waiter.resolve({ value: undefined, done: true });
+      }
+    }
+  }
+
+  return {
+    push(value) {
+      if (closed || failure) return;
+      values.push(value);
+      settle();
+    },
+    close(value = undefined) {
+      if (closed || failure) return;
+      if (value !== undefined) values.push(value);
+      closed = true;
+      settle();
+    },
+    fail(error) {
+      if (closed || failure) return;
+      failure = error;
+      settle();
+    },
+    iterable: {
+      [Symbol.asyncIterator]() {
+        return {
+          next() {
+            if (failure) return Promise.reject(failure);
+            if (values.length) return Promise.resolve({ value: values.shift(), done: false });
+            if (closed) return Promise.resolve({ value: undefined, done: true });
+            return new Promise((resolve, reject) => waiters.push({ resolve, reject }));
+          },
+        };
+      },
+    },
+  };
+}
+
 export class AppServerProvider {
   constructor({ client, config, logger = console } = {}) {
     this.config = config;
@@ -49,6 +100,15 @@ export class AppServerProvider {
     return this.#startTurn(requestBody);
   }
 
+  async completeStream(requestBody) {
+    await this.ensureReady();
+    const toolResults = extractToolResults(requestBody.messages || []);
+    if (toolResults.length) {
+      return this.#resumeStreamWithToolResults(toolResults);
+    }
+    return this.#startStreamTurn(requestBody);
+  }
+
   async #startTurn(requestBody) {
     const codex = this.config.codex || {};
     const dynamicTools = normalizeOpenAiTools(requestBody.tools || []);
@@ -74,6 +134,8 @@ export class AppServerProvider {
       toolRequestedScheduled: false,
       toolCalls: [],
       toolHash: stableHash(dynamicTools),
+      stream: null,
+      streamTimeout: null,
     };
     this.activeByThread.set(threadId, active);
 
@@ -96,6 +158,78 @@ export class AppServerProvider {
       this.activeByThread.delete(threadId);
       throw error;
     }
+  }
+
+  async #startStreamTurn(requestBody) {
+    const codex = this.config.codex || {};
+    const dynamicTools = normalizeOpenAiTools(requestBody.tools || []);
+    const threadResponse = await this.client.request("thread/start", {
+      cwd: codex.cwd || process.cwd(),
+      model: codex.model || null,
+      approvalPolicy: approvalForCodex(codex.approvalPolicy),
+      sandbox: sandboxForCodex(codex.sandbox),
+      ephemeral: true,
+      threadSource: "workbuddy-codex",
+      dynamicTools,
+      config: codex.effort ? { model_reasoning_effort: codex.effort } : null,
+    });
+
+    const threadId = threadResponse.thread.id;
+    const active = {
+      threadId,
+      turnId: null,
+      content: "",
+      completed: createDeferred(),
+      toolRequested: createDeferred(),
+      toolRequestedResolved: false,
+      toolRequestedScheduled: false,
+      toolCalls: [],
+      toolHash: stableHash(dynamicTools),
+      stream: createAsyncQueue(),
+      streamTimeout: null,
+    };
+    this.activeByThread.set(threadId, active);
+
+    const turnResponse = await this.client.request("turn/start", {
+      threadId,
+      input: [{ type: "text", text: messagesToPrompt(requestBody), text_elements: [] }],
+      effort: codex.effort || null,
+      model: codex.model || null,
+    });
+    active.turnId = turnResponse.turn.id;
+    this.#armStreamTimeout(active);
+    return this.#streamResult(active);
+  }
+
+  async #resumeStreamWithToolResults(toolResults) {
+    const touchedThreads = new Set();
+    for (const result of toolResults) {
+      const pending = this.pendingToolCalls.get(result.toolCallId);
+      if (!pending) continue;
+      this.pendingToolCalls.delete(result.toolCallId);
+      touchedThreads.add(pending.threadId);
+      pending.deferred.resolve({
+        contentItems: [{ type: "inputText", text: result.content }],
+        success: true,
+      });
+    }
+
+    const threadId = touchedThreads.values().next().value;
+    const active = threadId ? this.activeByThread.get(threadId) : null;
+    if (!active) {
+      return {
+        type: "message_stream",
+        deltas: (async function* () {
+          yield "No pending Codex tool call matched the WorkBuddy tool result.";
+        })(),
+        cancel: async () => {},
+      };
+    }
+
+    active.stream = createAsyncQueue();
+    active.streamTimeout = null;
+    this.#armStreamTimeout(active);
+    return this.#streamResult(active);
   }
 
   async #resumeWithToolResults(toolResults) {
@@ -148,6 +282,7 @@ export class AppServerProvider {
 
     if (notification.method === "item/agentMessage/delta") {
       active.content += params.delta || "";
+      active.stream?.push(params.delta || "");
       return;
     }
 
@@ -158,6 +293,9 @@ export class AppServerProvider {
 
     if (notification.method === "turn/completed") {
       const finalText = this.#extractFinalText(params.turn) || active.content;
+      if (active.stream && !active.content && finalText) active.stream.push(finalText);
+      active.stream?.close();
+      if (active.streamTimeout) clearTimeout(active.streamTimeout);
       active.completed.resolve({ type: "message", content: finalText || "" });
       this.activeByThread.delete(params.threadId);
     }
@@ -200,6 +338,11 @@ export class AppServerProvider {
         queueMicrotask(() => {
           if (active.toolRequestedResolved) return;
           active.toolRequestedResolved = true;
+          active.stream?.close({
+            type: "tool_calls",
+            toolCalls: active.toolCalls,
+          });
+          if (active.streamTimeout) clearTimeout(active.streamTimeout);
           active.toolRequested.resolve({
             type: "tool_calls",
             toolCalls: active.toolCalls,
@@ -221,6 +364,30 @@ export class AppServerProvider {
     } catch (error) {
       this.logger.warn?.(`failed to interrupt timed-out Codex turn: ${error?.message || error}`);
     }
+  }
+
+  #armStreamTimeout(active) {
+    const timeoutMs = this.config.codex?.requestTimeoutMs || 300000;
+    active.streamTimeout = setTimeout(async () => {
+      const error = new Error("Timed out waiting for Codex app-server response");
+      active.stream?.fail(error);
+      await this.#interruptActive(active);
+      this.activeByThread.delete(active.threadId);
+    }, timeoutMs);
+    active.streamTimeout.unref?.();
+  }
+
+  #streamResult(active) {
+    return {
+      type: "message_stream",
+      deltas: active.stream.iterable,
+      cancel: async () => {
+        if (active.streamTimeout) clearTimeout(active.streamTimeout);
+        active.stream?.close();
+        await this.#interruptActive(active);
+        this.activeByThread.delete(active.threadId);
+      },
+    };
   }
 
   diagnostics() {

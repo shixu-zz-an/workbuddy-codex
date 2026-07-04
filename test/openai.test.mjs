@@ -3,6 +3,10 @@ import test from "node:test";
 
 import {
   buildChatCompletion,
+  buildSseDeltaChunk,
+  buildSseDoneChunk,
+  buildSseErrorChunk,
+  buildSseStopChunk,
   buildSseChunks,
   messagesToPrompt,
   normalizeOpenAiTools,
@@ -62,6 +66,23 @@ test("buildSseChunks emits delta and DONE frames", () => {
 
   assert.match(chunks.join(""), /chat.completion.chunk/);
   assert.match(chunks.at(-1), /\[DONE\]/);
+});
+
+test("SSE helper chunks emit OpenAI-compatible streaming frames", () => {
+  const request = { model: "codex-app-server" };
+  const first = buildSseDeltaChunk(request, { content: "he", includeRole: true, id: "chatcmpl-test", created: 123 });
+  const next = buildSseDeltaChunk(request, { content: "llo", id: "chatcmpl-test", created: 123 });
+  const stop = buildSseStopChunk(request, { id: "chatcmpl-test", created: 123 });
+  const error = buildSseErrorChunk(500, "stream failed");
+
+  assert.deepEqual(JSON.parse(first.slice("data: ".length)).choices[0].delta, {
+    role: "assistant",
+    content: "he",
+  });
+  assert.deepEqual(JSON.parse(next.slice("data: ".length)).choices[0].delta, { content: "llo" });
+  assert.equal(JSON.parse(stop.slice("data: ".length)).choices[0].finish_reason, "stop");
+  assert.equal(JSON.parse(error.slice("data: ".length)).error.message, "stream failed");
+  assert.equal(buildSseDoneChunk(), "data: [DONE]\n\n");
 });
 
 test("stripWorkBuddyModelPrefix handles WorkBuddy custom model prefixes", () => {

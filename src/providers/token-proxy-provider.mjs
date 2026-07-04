@@ -30,15 +30,49 @@ export class TokenProxyProvider {
       ...requestBody,
       model: tokenProxy.model || stripWorkBuddyModelPrefix(requestBody.model),
     };
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), tokenProxy.timeoutMs || 300000);
+    timeout.unref?.();
 
-    const response = await this.fetchImpl(tokenProxy.endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(upstreamBody),
-      signal: AbortSignal.timeout(tokenProxy.timeoutMs || 300000),
-    });
+    let response;
+    try {
+      response = await this.fetchImpl(tokenProxy.endpoint, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(upstreamBody),
+        signal: abortController.signal,
+      });
+    } catch (error) {
+      clearTimeout(timeout);
+      throw error;
+    }
 
-    const text = await response.text();
+    const contentType = response.headers.get("content-type") || "application/json; charset=utf-8";
+    if (response.ok && response.body && /text\/event-stream/i.test(contentType)) {
+      return {
+        type: "raw_stream",
+        statusCode: response.status,
+        body: response.body,
+        headers: {
+          "content-type": contentType,
+          "cache-control": response.headers.get("cache-control") || "no-cache",
+        },
+        cancel: async () => {
+          clearTimeout(timeout);
+          abortController.abort();
+          const cancelled = response.body.cancel?.();
+          await cancelled?.catch?.(() => {});
+        },
+        finalize: () => clearTimeout(timeout),
+      };
+    }
+
+    let text;
+    try {
+      text = await response.text();
+    } finally {
+      clearTimeout(timeout);
+    }
     let body;
     try {
       body = JSON.parse(text);

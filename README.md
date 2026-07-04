@@ -8,8 +8,9 @@ The default mode is safe and durable: WorkBuddy calls a localhost `/v1/chat/comp
 
 - OpenAI-compatible endpoint for WorkBuddy custom models.
 - Normal mode: persistent `codex app-server` bridge, avoiding `codex exec` cold starts.
+- True streaming: `stream: true` requests receive incremental OpenAI-compatible SSE chunks as Codex emits deltas.
 - Tool-call bridge: WorkBuddy function tools are exposed to Codex as dynamic tools, then returned to WorkBuddy as OpenAI `tool_calls`.
-- Emergency mode: forward requests to a configured token-proxy endpoint.
+- Emergency mode: forward requests to a configured token-proxy endpoint, including transparent upstream SSE forwarding.
 - Local dashboard for switching modes and editing core settings.
 - WorkBuddy config installer for `~/.workbuddy/models.json`.
 - No runtime npm dependencies.
@@ -69,6 +70,8 @@ WorkBuddy custom model
   -> your authenticated Codex backend
 ```
 
+When WorkBuddy sends `stream: true`, the gateway returns `text/event-stream` immediately and forwards Codex app-server `item/agentMessage/delta` notifications as OpenAI-compatible `chat.completion.chunk` frames. The stream ends with a stop chunk and `data: [DONE]`.
+
 Tool-call flow:
 
 ```text
@@ -109,6 +112,8 @@ WORKBUDDY_CODEX_BEARER_TOKEN="..." npm start
 
 This mode exists for emergency fallback. It may be less stable and may carry account, product-policy, or provider-terms risk depending on the upstream endpoint and token source.
 
+If the upstream returns `text/event-stream`, the gateway forwards the SSE body directly instead of buffering and reserializing it. If the client disconnects, the gateway aborts the upstream request.
+
 ## Commands
 
 ```bash
@@ -140,5 +145,4 @@ Equivalent CLI:
 - The gateway cannot make WorkBuddy and Codex share a native internal state model; it bridges protocols.
 - If the Codex backend itself is slow, persistent app-server mode reduces local startup overhead but cannot remove upstream latency.
 - WorkBuddy must actually send OpenAI `tools` for the tool-call bridge to preserve its own agent tooling.
-- Streaming is currently returned as a single SSE delta after Codex completes; true incremental streaming is a future improvement.
-
+- Tool calls may still require a request/response round trip because WorkBuddy must execute the requested tool before Codex can continue.

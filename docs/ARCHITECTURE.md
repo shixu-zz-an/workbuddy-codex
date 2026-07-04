@@ -27,6 +27,9 @@ src/app-server/json-rpc-line-client.mjs
 src/providers/token-proxy-provider.mjs
   Emergency forwarding provider.
 
+src/http/openai-compatible.mjs
+  OpenAI-compatible request rendering plus JSON and SSE response frame builders.
+
 src/workbuddy-config.mjs
   Writes WorkBuddy custom model entries into models.json.
 ```
@@ -42,6 +45,26 @@ POST /v1/chat/completions
        item/tool/call
        turn/completed
 ```
+
+## Streaming Request Flow
+
+For `stream: true` app-server requests:
+
+```text
+POST /v1/chat/completions
+  -> select app-server provider
+  -> thread/start
+  -> turn/start
+  -> return text/event-stream headers
+  -> item/agentMessage/delta notifications become OpenAI chat.completion.chunk frames
+  -> turn/completed becomes stop chunk + data: [DONE]
+```
+
+The provider exposes the deltas as an async iterable. The HTTP server owns wire-format details, so OpenAI SSE framing is kept in one place.
+
+If the client disconnects before the stream completes, the HTTP server calls the provider cancel hook. App-server mode sends `turn/interrupt`; token-proxy mode aborts the upstream fetch.
+
+For token-proxy requests, upstream `text/event-stream` responses are forwarded as raw streams. The gateway does not parse, buffer, or reserialize upstream SSE.
 
 If Codex asks for a dynamic tool:
 
@@ -71,4 +94,3 @@ Default behavior is intentionally conservative:
 `codex exec` works but starts a full agent process for every request. In practice this is slow because it loads local Codex state and then establishes an upstream model connection.
 
 `codex app-server` is a long-running JSON-RPC service with thread/turn semantics, notifications, dynamic tools, and file/command events. It is the correct primitive for a custom model gateway.
-

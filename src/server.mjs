@@ -6,6 +6,10 @@ import { endpointFor, mergeConfig, sanitizeConfigForDisplay, writeConfig } from 
 import {
   HttpError,
   buildChatCompletion,
+  buildSseDeltaChunk,
+  buildSseDoneChunk,
+  buildSseErrorChunk,
+  buildSseStopChunk,
   buildSseChunks,
   buildToolCallCompletion,
   openAiError,
@@ -136,7 +140,10 @@ export class GatewayServer {
       messageCount: Array.isArray(body.messages) ? body.messages.length : 0,
       toolCount: Array.isArray(body.tools) ? body.tools.length : 0,
     });
-    const result = await provider.complete(body);
+    const result =
+      body.stream && typeof provider.completeStream === "function"
+        ? await provider.completeStream(body)
+        : await provider.complete(body);
     this.#logRequest("provider_result", requestContext, {
       resultType: result.type,
       statusCode: result.statusCode || 200,
@@ -144,10 +151,17 @@ export class GatewayServer {
       toolCallCount: Array.isArray(result.toolCalls) ? result.toolCalls.length : undefined,
     });
 
+    if (result.type === "raw_stream") {
+      return this.#rawStream(req, res, result, requestContext);
+    }
+    if (result.type === "message_stream") {
+      return this.#messageStream(req, res, body, result, requestContext);
+    }
     if (result.type === "raw") {
       return this.#json(res, result.statusCode || 200, result.body, result.headers, requestContext);
     }
     if (result.type === "tool_calls") {
+      if (body.stream) return this.#toolCallStream(res, body, result.toolCalls, requestContext);
       return this.#json(res, 200, buildToolCallCompletion(body, result.toolCalls), {}, requestContext);
     }
     if (body.stream) {
@@ -161,6 +175,156 @@ export class GatewayServer {
       return res.end();
     }
     return this.#json(res, 200, buildChatCompletion(body, result.content || ""), {}, requestContext);
+  }
+
+  async #messageStream(req, res, requestBody, result, requestContext) {
+    let completed = false;
+    const onClose = () => {
+      if (completed) return;
+      this.#logRequest("stream_cancelled", requestContext, { streamType: "message" });
+      result.cancel?.();
+    };
+    res.once("close", onClose);
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    });
+    this.#logRequest("stream_started", requestContext, { streamType: "message" });
+
+    const id = `chatcmpl-codex-${randomUUID()}`;
+    const created = Math.floor(Date.now() / 1000);
+    let includeRole = true;
+    try {
+      for await (const event of result.deltas) {
+        if (typeof event === "string") {
+          if (!event) continue;
+          res.write(buildSseDeltaChunk(requestBody, { content: event, includeRole, id, created }));
+          includeRole = false;
+          continue;
+        }
+        if (event?.type === "tool_calls") {
+          res.write(this.#toolCallSseChunk(requestBody, event.toolCalls || [], { id, created }));
+          res.write(buildSseDoneChunk());
+          completed = true;
+          this.#logRequest("stream_completed", requestContext, { streamType: "message", finishReason: "tool_calls" });
+          return res.end();
+        }
+      }
+      res.write(buildSseStopChunk(requestBody, { id, created }));
+      res.write(buildSseDoneChunk());
+      completed = true;
+      this.#logRequest("stream_completed", requestContext, { streamType: "message", finishReason: "stop" });
+      return res.end();
+    } catch (error) {
+      completed = true;
+      this.#logRequest("stream_error", requestContext, {
+        streamType: "message",
+        error: error?.message || String(error),
+      });
+      res.write(buildSseErrorChunk(500, error?.message || "stream failed"));
+      res.write(buildSseDoneChunk());
+      return res.end();
+    } finally {
+      res.off("close", onClose);
+    }
+  }
+
+  async #rawStream(req, res, result, requestContext) {
+    let completed = false;
+    const onClose = () => {
+      if (completed) return;
+      this.#logRequest("stream_cancelled", requestContext, { streamType: "raw" });
+      result.cancel?.();
+    };
+    res.once("close", onClose);
+    res.writeHead(result.statusCode || 200, {
+      "content-type": result.headers?.["content-type"] || "application/octet-stream",
+      "cache-control": result.headers?.["cache-control"] || "no-cache, no-transform",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    });
+    this.#logRequest("stream_started", requestContext, { streamType: "raw", statusCode: result.statusCode || 200 });
+
+    try {
+      await this.#writeStreamBody(res, result.body);
+      completed = true;
+      result.finalize?.();
+      this.#logRequest("stream_completed", requestContext, { streamType: "raw" });
+      return res.end();
+    } catch (error) {
+      completed = true;
+      this.#logRequest("stream_error", requestContext, {
+        streamType: "raw",
+        error: error?.message || String(error),
+      });
+      result.cancel?.();
+      return res.end();
+    } finally {
+      res.off("close", onClose);
+    }
+  }
+
+  async #writeStreamBody(res, body) {
+    if (!body) return;
+    if (typeof body.getReader === "function") {
+      const reader = body.getReader();
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value) res.write(value);
+        }
+      } finally {
+        reader.releaseLock?.();
+      }
+      return;
+    }
+    for await (const chunk of body) res.write(chunk);
+  }
+
+  #toolCallStream(res, requestBody, toolCalls, requestContext) {
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    });
+    res.write(this.#toolCallSseChunk(requestBody, toolCalls));
+    res.write(buildSseDoneChunk());
+    this.#logRequest("response_sent", requestContext, { statusCode: 200, streaming: true, finishReason: "tool_calls" });
+    res.end();
+  }
+
+  #toolCallSseChunk(requestBody, toolCalls, { id = `chatcmpl-codex-${randomUUID()}`, created = Math.floor(Date.now() / 1000) } = {}) {
+    return `data: ${JSON.stringify({
+      id,
+      object: "chat.completion.chunk",
+      created,
+      model: requestBody.model || "codex-app-server",
+      choices: [
+        {
+          index: 0,
+          delta: {
+            role: "assistant",
+            tool_calls: toolCalls.map((toolCall, index) => ({
+              index,
+              id: toolCall.id,
+              type: "function",
+              function: {
+                name: toolCall.name,
+                arguments:
+                  typeof toolCall.arguments === "string"
+                    ? toolCall.arguments
+                    : JSON.stringify(toolCall.arguments ?? {}),
+              },
+            })),
+          },
+          finish_reason: "tool_calls",
+        },
+      ],
+    })}\n\n`;
   }
 
   #selectProvider(body) {

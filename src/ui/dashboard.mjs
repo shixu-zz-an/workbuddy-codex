@@ -131,12 +131,25 @@ codex-token-proxy</pre>
       document.querySelector('#status').textContent = JSON.stringify(await api('/api/install-workbuddy', { method: 'POST', body: '{}' }), null, 2);
     }
     async function testGateway() {
+      const output = document.querySelector('#status');
+      output.textContent = '';
       const res = await fetch('/v1/chat/completions', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model: 'codex-app-server', messages: [{ role: 'user', content: '请只回复 OK' }] })
+        body: JSON.stringify({ model: 'codex-app-server', stream: true, messages: [{ role: 'user', content: '请只回复 OK' }] })
       });
-      document.querySelector('#status').textContent = await res.text();
+      if (!res.ok || !res.body) {
+        output.textContent = await res.text();
+        return;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        output.textContent += decoder.decode(value, { stream: true });
+      }
+      output.textContent += decoder.decode();
     }
     refreshStatus().catch(error => { document.querySelector('#status').textContent = error.message; });
   </script>
